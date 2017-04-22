@@ -15,3 +15,5 @@ CUDA:
 		https://devblogs.nvidia.com/parallelforall/how-overlap-data-transfers-cuda-cc/
 	6. Global Memory
 		https://devblogs.nvidia.com/parallelforall/how-access-global-memory-efficiently-cuda-c-kernels/
+TRASPOSE:
+	cuBlas vs Thrust: http://www.orangeowlsolutions.com/archives/790

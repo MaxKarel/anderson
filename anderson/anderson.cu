@@ -16,7 +16,7 @@ float dx = 2*sqrt(dt);
 //float dx = 1;
 th_complex imag_one = th_complex (0.0f, 1.0f);
 th_complex a = -imag_one*dt/(dx*dx);
-th_complex b = 1.0f+a;
+th_complex b = 1.0f+a/2.0f;
 
 __global__ void altCU(th_complex* d_u, th_complex* d_uH,
                       th_complex* d_c, th_complex* d_V,
@@ -52,8 +52,7 @@ void printResult(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V
 void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]);
 void stdDev_r(ofstream& r, float t, th_complex u[][xmax]);
 void transpose(th_complex arr[][xmax]);
-void altCPU(th_complex h_u[][xmax], th_complex h_uH[][xmax],
-            th_complex h_V[][xmax], th_complex h_c[],
+void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
             int xmax, th_complex a, th_complex b);
 
 int main() {
@@ -79,7 +78,7 @@ int main() {
   //////////////////////////////////////////////
   ////  CUDA                                ////
   //////////////////////////////////////////////
-  /*ofstream r_fout("stdDev_rCU.dat");
+  ofstream r_fout("stdDev_rCU.dat");
   cudaMalloc(&d_u, arrSize);
   cudaMalloc(&d_uH, arrSize);
   cudaMalloc(&d_V, arrSize);
@@ -109,15 +108,15 @@ int main() {
   cudaFree(d_u);
   cudaFree(d_uH);
   cudaFree(d_c);
-  */
+
   //////////////////////////////////////////////
   ////  CPU                                 ////
   //////////////////////////////////////////////
-  for (int t = 0; t< tmax; t++) {
-    altCPU(h_u, h_uH, h_V, h_c, xmax, a, b);
+  /*for (int t = 0; t< 20; t++) {
+    altCPU(h_u, h_V, h_c, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
-    altCPU(h_u, h_uH, h_V, h_c, xmax, a, b);
+    altCPU(h_u, h_V, h_c, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
     if (t%100==0) {
@@ -125,7 +124,7 @@ int main() {
       //stdDev_r(r_fout,t,h_u);
     }
   }
-  printResult(h_u, h_uH, h_V, h_c);
+  printResult(h_u, h_uH, h_V, h_c);*/
   return 0;
 }
 
@@ -134,11 +133,11 @@ void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_co
     for (int j = 0; j < xmax; j++) {
       h_u[i][j]=th_complex(0.0f, 0.0f);
       h_uH[i][j]=th_complex(0.0f, 0.0f);
-      h_V[i][j]=th_complex(7.0f*(float)(random()%2000/2000.0-1.0f), 0.0f);
+      h_V[i][j]=th_complex(7.0f*(float)(random()%10000/10000.0-0.5f), 0.0f);
       h_V[i][j] *= dt/imag_one;
-      //h_V[i][j] = 0;
+      h_V[i][j] = 0;
     }
-    h_c[i]=-a;  //nastavenie superdiagonaly v matici B
+    h_c[i]=-a/2.0f;  //nastavenie superdiagonaly v matici B
     //B*\psi(t+\delta) = A*\psi(t)
   }
   //uprava pola C na algoritmus vypoctu systemu s trojdiagonalnou maticou
@@ -189,27 +188,36 @@ void transpose(th_complex arr[][xmax]) {
   }
 }
 
-void altCPU(th_complex h_u[][xmax], th_complex h_uH[][xmax],
-            th_complex h_V[][xmax], th_complex h_c[],
+void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
             int xmax, th_complex a, th_complex b) {
+
   th_complex help[xmax][xmax];
+  th_complex mod_rs[xmax]; //modified right side
+
   for(int i = 0 ; i < xmax ; i++) {
     for (int j = 0 ; j < xmax ; j++) {
       help[i][j] = h_u[i][j];
     }
   }
+
   for(int i = 1; i<xmax-1; i++) {
-    h_uH[i][0] = (1.0f-a)*help[i][0] + a*(help[i-1][0]+help[i+1][0])/2.0f;
-    h_uH[i][0] += h_V[i][0];
-    h_uH[i][0] /=b;
-    th_complex di;
+    //Calculating Vector C
+    h_c[0] = -a/2.0f;
+    h_c[0] /= b - h_V[i][0];
+    for(int k = 1 ; k < xmax ; k++) {
+      h_c[k] = -a/2.0f;
+      h_c[k] /= (b - h_V[i][0]) + a/2.0f*h_c[k-1];
+    }
+
+    mod_rs[0] = (1.0f-a)*help[i][0] + a*(help[i-1][0]+help[i+1][0])/2.0f;
+    mod_rs[0] /=b - h_V[i][0];
+    th_complex di;  //right side
     for(int j=1; j < xmax-1; j++) {
-      di  = h_V[i][j];
       di += (1.0f-a)*help[i][j] + a*(help[i-1][j]+help[i+1][j])/2.0f;
-      h_uH[i][j] = (di+a/2.0f*h_uH[i][j-1])/((1.0f+a)+a/2.0f*h_c[j-1]);
+      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b - h_V[i][j])+a/2.0f*h_c[j-1]);
     }
     for(int j=xmax-2; j>-1; j--) {
-      h_u[i][j]=h_uH[i][j]-h_c[j]*h_u[i][j+1];
+      h_u[i][j]=mod_rs[j]-h_c[j]*h_u[i][j+1];
     }
   }
 }

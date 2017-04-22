@@ -19,6 +19,8 @@ const int xmax = 2048; //size of arrays
 const int TILE_DIM = 32;
 th_complex h_u[xmax][xmax];
 th_complex h_uH[xmax][xmax];
+th_complex h_ub[xmax][xmax];
+th_complex h_ua[xmax][xmax];
 
 bool checkResult(th_complex h_u[][xmax], th_complex h_uH[][xmax]);
 void initializeHostArrays(th_complex h_u[][xmax]);
@@ -31,14 +33,15 @@ __global__ void transposeCU(th_complex* d_u,
     d_uH[i*xmax+j] = d_u[j*xmax+i];
   }
 }
-
+/*
 __global__ void transposeCoalesced(th_complex *odata, th_complex *idata)
 {
-  /*
+  /////////////////////////////////////////////////////////////////
+  ///
+  /// Code is from nVidia website : https://devblogs.nvidia.com/parallelforall/efficient-matrix-transpose-cuda-cc/
+  ///
+  /////////////////////////////////////////////////////////////////
 
-  Code is from nVidia website : https://devblogs.nvidia.com/parallelforall/efficient-matrix-transpose-cuda-cc/
-
-  */
   __shared__ float tile[TILE_DIM][TILE_DIM];
 
   int x = blockIdx.x * TILE_DIM + threadIdx.x;
@@ -56,27 +59,27 @@ __global__ void transposeCoalesced(th_complex *odata, th_complex *idata)
   for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
      odata[(y+j)*width + x] = tile[threadIdx.x][threadIdx.y + j];
 }
-
+*/
 int main() {
   cout << "Starting the test ...." << endl;
 
-  const rlim_t kStackSize = 16 * 1024 * 1024;   // min stack size = 16 MB
-    struct rlimit rl;
-    int result;
-
-    result = getrlimit(RLIMIT_STACK, &rl);
-    if (result == 0)
-    {
-        if (rl.rlim_cur < kStackSize)
-        {
-            rl.rlim_cur = kStackSize;
-            result = setrlimit(RLIMIT_STACK, &rl);
-            if (result != 0)
-            {
-                fprintf(stderr, "setrlimit returned result = %d\n", result);
-            }
-        }
-    }
+  // const rlim_t kStackSize = 16 * 1024 * 1024;   // min stack size = 16 MB
+  //   struct rlimit rl;
+  //   int result;
+  //
+  //   result = getrlimit(RLIMIT_STACK, &rl);
+  //   if (result == 0)
+  //   {
+  //       if (rl.rlim_cur < kStackSize)
+  //       {
+  //           rl.rlim_cur = kStackSize;
+  //           result = setrlimit(RLIMIT_STACK, &rl);
+  //           if (result != 0)
+  //           {
+  //               fprintf(stderr, "setrlimit returned result = %d\n", result);
+  //           }
+  //       }
+  //   }
 
   initializeHostArrays(h_u);
   if((nIter%2) != 0) {nIter+=1;} //it has to be even in order to pass checkResult()
@@ -161,7 +164,7 @@ int main() {
   cout<< "Starting Coalesced Transpose (shared memory)" << endl;
   start = clock();
   for (int _t = 0; _t< nIter; _t++) {
-    transposeCoalesced<<<dimGrid,dimBlock>>>(d_u, d_uH);
+    //transposeCoalesced<<<dimGrid,dimBlock>>>(d_u, d_uH);
     cudaError_t lastErr = cudaGetLastError();
     if ( cudaSuccess != lastErr ) {
       cout << lastErr << endl;
