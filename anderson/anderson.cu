@@ -1,40 +1,54 @@
 #include <iostream>
+#include <iomanip>
 #include <cmath>
-#include <iostream>
 #include <fstream>
 #include <thrust/complex.h>
+#include <thrust/copy.h>
 #include <cublas_v2.h>
+#include "helper_cuda.h"
 
 using namespace std;
 
-typedef thrust::complex<float> th_complex;
+typedef thrust::complex<double> th_complex;
 
-const int xmax = 101;
-const int tmax = 2000;
-float dt = 1/100.0f;
-float dx = 2*sqrt(dt);
-//float dx = 1;
-th_complex imag_one = th_complex (0.0f, 1.0f);
-th_complex a = -imag_one*dt/(dx*dx);
-th_complex b = 1.0f+a/2.0f;
+const int xmax = 1024;
+const int tmax = 500;
+float dt = 0.02;
+//float dx = 2*sqrt(dt);
+float scale = 2;
+float dx = 1;
+th_complex imag_one (0.0, 1.0);
+th_complex a = -imag_one*th_complex(dt/(dx*dx),0.0);
+th_complex b = 1.0+a;
 
-__global__ void altCU(th_complex* d_u, th_complex* d_uH,
-                      th_complex* d_c, th_complex* d_V,
-                      int xmax, th_complex a, th_complex b) {
+__global__ void altCU(th_complex* d_u, th_complex* d_uH, th_complex* d_V,
+            int xmax, th_complex a, th_complex b) {
+
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if ((i<xmax-1)&(i>0)) {
-    d_uH[i*xmax + 0]  = (1.0f-a)*d_u[i*xmax + 0] + a/2.0f*(d_u[(i-1)*xmax + 0]+d_u[(i+1)*xmax + 0]);
-    d_uH[i*xmax + 0] += d_V[i*xmax + 0];  //d_V je uz vynasobene konstantami v init funkcii
-    d_uH[i*xmax + 0] /= b;
-    th_complex di;
-    for(int j=1; j < xmax-1; j++) {
-      di  = d_V[i*xmax + j];
-      di += (1.0f-a)*d_u[i*xmax + j] + a/2.0f*(d_u[(i-1)*xmax + j]+d_u[(i+1)*xmax + j]);
-
-      d_uH[i*xmax + j] = (di+a/2.0f*d_uH[i*xmax + j-1])/(b+a/2.0f*d_c[j-1]);
+    th_complex mod_rs[201];  //modified right side
+    th_complex c[201];  //super-diagonal vector
+    //calculate h_c
+    for(int j = 0 ; j < xmax ; j++) {
+      c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
     }
-    for(int j=xmax-2; j>-1; j--) {
-      d_u[i*xmax + j]=d_uH[i*xmax + j]-d_c[j]*d_u[i*xmax + j+1];
+    //modify h_c
+    c[0] /= b - d_V[i*xmax + 0];	//delime strednou diagonalou
+    for(int j = 1 ; j < xmax ; j++) {
+      c[j] /= (b - d_V[i*xmax + j]) + a/2.0*c[j-1];	//spodna diagonala v matici je -a/2 preto +
+    }
+
+    mod_rs[0]  = (1.0-a)*d_uH[i*xmax + 0] + a/2.0*(d_uH[(i-1)*xmax + 0]+d_uH[(i+1)*xmax + 0]);
+    mod_rs[0] /= b - d_V[i*xmax + 0];
+    th_complex di;  //unmodified right side, help variable
+    for(int j=1; j < xmax-1; j++) {
+      di  = (1.0-a)*d_uH[i*xmax + j] + a/2.0*(d_uH[(i-1)*xmax + j]+d_uH[(i+1)*xmax + j]);
+      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b - d_V[i*xmax + j])+a/2.0*c[j-1]);
+    }
+    d_u[i*xmax + xmax-1]=0; //mod_rs[j];
+    for(int j=xmax-2; j>0; j--) {
+      d_u[i*xmax + j]=mod_rs[j]-c[j]*d_u[i*xmax + j+1];
+
     }
   }
 }
@@ -55,18 +69,21 @@ void transpose(th_complex arr[][xmax]);
 void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
             int xmax, th_complex a, th_complex b);
 
+  th_complex h_u[xmax][xmax] = {}; //alocating on heap
+  th_complex h_uH[xmax][xmax] = {};
+  th_complex h_V[xmax][xmax] = {};
+  th_complex h_c[xmax] = {};
+
 int main() {
 
   if(xmax > 1024) {printf("Size of arr is greater than maximal number of threads %i\n", xmax);}
 
-  th_complex h_u[xmax][xmax];
-  th_complex h_uH[xmax][xmax];
-  th_complex h_V[xmax][xmax];
-  th_complex h_c[xmax];
   th_complex *d_u, *d_uH, *d_V, *d_c;
 
-  const float alpha = 1.0;
-  const float beta  = 0.0;
+  cuDoubleComplex alpha = make_cuDoubleComplex(1.0,0.0);
+  cuDoubleComplex beta = make_cuDoubleComplex(0.0,0.0);
+  const cuDoubleComplex* _alpha = &alpha;
+  const cuDoubleComplex* _beta = &beta;
   cublasHandle_t handle;
   cublasCreate(&handle);
 
@@ -78,75 +95,99 @@ int main() {
   //////////////////////////////////////////////
   ////  CUDA                                ////
   //////////////////////////////////////////////
-  ofstream r_fout("stdDev_rCU.dat");
+  ofstream r_fout("and_stdDev_rCU.dat");
+
   cudaMalloc(&d_u, arrSize);
   cudaMalloc(&d_uH, arrSize);
   cudaMalloc(&d_V, arrSize);
   cudaMalloc(&d_c, vektSize);
-  cudaMemcpy(d_u, h_u, arrSize, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_uH, h_uH, arrSize, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_V, h_V, arrSize, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_c, h_c, vektSize, cudaMemcpyHostToDevice);
-
+  checkCudaErrors(cudaMemcpy(d_u, h_u, arrSize, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_uH, h_uH, arrSize, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_V, h_V, arrSize, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_c, h_c, vektSize, cudaMemcpyHostToDevice));
   dim3 dimBlock(32,32);
   dim3 dimGrid(xmax / 32 + 1, xmax / 32 + 1);
-  for (int t = 0; t< 15; t++) {
-    altCU<<<1,xmax>>>(d_u, d_uH, d_c, d_V,xmax,a,b);
-    transposeCU<<<dimGrid,dimBlock>>>(d_u, d_uH, xmax);
-    cudaMemcpy(d_u, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-    transposeCU<<<dimGrid,dimBlock>>>(d_V, d_uH, xmax);
-    cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-    if (t%100==0) {
-      cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
-      stdDev_r(r_fout,t,h_u);
-    }
+
+  cuDoubleComplex* d_uc = reinterpret_cast<cuDoubleComplex* >(d_u);
+  cuDoubleComplex* d_uHc = reinterpret_cast<cuDoubleComplex* >(d_uH);
+  cuDoubleComplex* d_Vc = reinterpret_cast<cuDoubleComplex* >(d_V);
+
+  cout.precision(25);
+  for (int t = 0; t< tmax; t++) {
+   altCU<<<1,xmax>>>(d_u, d_uH, d_V,xmax,a,b);
+   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+               _alpha, d_Vc, xmax,
+               _beta, d_Vc, xmax,
+               d_uHc, xmax);
+   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+               _alpha, d_uc, xmax,
+               _beta, d_uc, xmax,
+               d_uHc, xmax);
+   /*transposeCU<<<dimGrid,dimBlock>>>(d_V, d_uH, xmax);
+   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+   transposeCU<<<dimGrid,dimBlock>>>(d_u, d_uH, xmax);*/
+   altCU<<<1,xmax>>>(d_u, d_uH, d_V,xmax,a,b);
+   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+               _alpha, d_Vc, xmax,
+               _beta, d_Vc, xmax,
+               d_uHc, xmax);
+   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+               _alpha, d_uc, xmax,
+               _beta, d_uc, xmax,
+               d_uHc, xmax);
+   /*transposeCU<<<dimGrid,dimBlock>>>(d_V, d_uH, xmax);
+   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+   transposeCU<<<dimGrid,dimBlock>>>(d_u, d_uH, xmax);*/
+   //cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+   if (t%100==0) {
+     cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
+     stdDev_r(r_fout,t,h_u);
+   }
   }
+
   cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_uH, d_uH, arrSize, cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_c, d_c, vektSize, cudaMemcpyDeviceToHost);
   printResult(h_u, h_uH, h_V, h_c);
   cudaFree(d_u);
+  cudaFree(d_V);
   cudaFree(d_uH);
   cudaFree(d_c);
 
   //////////////////////////////////////////////
   ////  CPU                                 ////
   //////////////////////////////////////////////
-  /*for (int t = 0; t< 20; t++) {
+  /*ofstream r_fout("std.cpp");
+  for (int t = 0; t< tmax; t++) {
     altCPU(h_u, h_V, h_c, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
     altCPU(h_u, h_V, h_c, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
-    if (t%100==0) {
-      //cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
-      //stdDev_r(r_fout,t,h_u);
+    if (t%10==0) {
+      stdDev_r(r_fout,t,h_u);
     }
   }
-  printResult(h_u, h_uH, h_V, h_c);*/
+  printResult(h_u, h_uH, h_V, h_c);
+  */
+
   return 0;
 }
 
 void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]) {
   for(int i = 0; i<xmax; i++){
     for (int j = 0; j < xmax; j++) {
-      h_u[i][j]=th_complex(0.0f, 0.0f);
-      h_uH[i][j]=th_complex(0.0f, 0.0f);
-      h_V[i][j]=th_complex(7.0f*(float)(random()%10000/10000.0-0.5f), 0.0f);
-      h_V[i][j] *= dt/imag_one;
-      h_V[i][j] = 0;
+      h_u[i][j] =th_complex(0.0, 0.0);
+      h_uH[i][j]=th_complex(0.0, 0.0);
+      h_V[i][j] =th_complex(2*scale*(float)(rand()%10000/10000.0-0.5), 0.0);
+      h_V[i][j] *= th_complex(dt,0.0)/imag_one;
+      //h_V[i][j] = 0;
     }
-    h_c[i]=-a/2.0f;  //nastavenie superdiagonaly v matici B
-    //B*\psi(t+\delta) = A*\psi(t)
-  }
-  //uprava pola C na algoritmus vypoctu systemu s trojdiagonalnou maticou
-  h_c[0] /= b;
-  for (int i = 1; i<xmax; i++) {
-    h_c[i] = h_c[i]/(b + a*h_c[i-1]);
   }
   //Nastavenie pociatocnych podmienok
-  h_u[xmax/2][xmax/2] = th_complex(1.0f, 0);
+  h_u[xmax/2][xmax/2] = th_complex(1.0, 0);
+  h_uH[xmax/2][xmax/2] = th_complex(1.0, 0);
 }
 void printInitialVariables(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]) {
   cout << "     dx== " << dx <<endl<< "     dt== " << dt << endl << "      a== " << a << endl;
@@ -172,10 +213,10 @@ void stdDev_r(ofstream& r, float t, th_complex u[][xmax]) {
   th_complex sum = 0;
   for(int i = 0; i< xmax; i++) {
     for(int j = 0; j < xmax; j++) {
-      //sum += (float)(pow((float)(i-xmax/2)/xmax*l,2) + pow((float)(j-xmax/2)/xmax*l,2))*u[i][j]/10000.0f;
+      sum += (float)(pow((float)(i-xmax/2),2) + pow((float)(j-xmax/2),2))*(u[i][j].real()*u[i][j].real() + u[i][j].imag()*u[i][j].imag());
     }
   }
-  //r << tSec*t/tmax << " " << sum.real() << endl;
+  r << t/tmax << " " << sum.real() << endl;
 }
 void transpose(th_complex arr[][xmax]) {
   th_complex help;
@@ -191,33 +232,50 @@ void transpose(th_complex arr[][xmax]) {
 void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
             int xmax, th_complex a, th_complex b) {
 
-  th_complex help[xmax][xmax];
-  th_complex mod_rs[xmax]; //modified right side
+  th_complex mod_rs[xmax];  //modified right side
 
   for(int i = 0 ; i < xmax ; i++) {
     for (int j = 0 ; j < xmax ; j++) {
-      help[i][j] = h_u[i][j];
+      h_uH[i][j] = h_u[i][j]; //This is preserved state in time = t
     }
   }
 
   for(int i = 1; i<xmax-1; i++) {
-    //Calculating Vector C
-    h_c[0] = -a/2.0f;
-    h_c[0] /= b - h_V[i][0];
-    for(int k = 1 ; k < xmax ; k++) {
-      h_c[k] = -a/2.0f;
-      h_c[k] /= (b - h_V[i][0]) + a/2.0f*h_c[k-1];
+    //calculate h_c
+    for(int j = 0 ; j < xmax ; j++) {
+      h_c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
+    }
+    //modify h_c
+    h_c[0] /= b - h_V[i][0];	//delime strednou diagonalou
+    for(int j = 1 ; j < xmax ; j++) {
+      h_c[j] /= (b - h_V[i][j]) + a/2.0*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
     }
 
-    mod_rs[0] = (1.0f-a)*help[i][0] + a*(help[i-1][0]+help[i+1][0])/2.0f;
-    mod_rs[0] /=b - h_V[i][0];
-    th_complex di;  //right side
+    mod_rs[0]  = (1.0-a)*h_uH[i][0] + a/2.0*(h_uH[i-1][0]+h_uH[i+1][0]);
+    mod_rs[0] /= b - h_V[i][0];
+    th_complex di;  //unmodified right side, help variable
     for(int j=1; j < xmax-1; j++) {
-      di += (1.0f-a)*help[i][j] + a*(help[i-1][j]+help[i+1][j])/2.0f;
-      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b - h_V[i][j])+a/2.0f*h_c[j-1]);
+      di  = (1.0-a)*h_uH[i][j] + a/2.0*(h_uH[i-1][j]+h_uH[i+1][j]);
+      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b - h_V[i][j])+a/2.0*h_c[j-1]);
     }
-    for(int j=xmax-2; j>-1; j--) {
+    h_u[i][xmax-1]=0; //mod_rs[j];
+    for(int j=xmax-2; j>0; j--) {
       h_u[i][j]=mod_rs[j]-h_c[j]*h_u[i][j+1];
     }
+  }
+  cout.precision(17);
+  //Kontrola ci okrajove body v mriezke su = 0
+  for(int i = 0 ; i < xmax ; i++) {
+    if(h_u[i][0].real() != 0.0) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
+    if(h_u[i][0].imag() != 0.0) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
+
+    if(h_u[i][xmax-1].real() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].imag() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+
+    if(h_u[0][i].real() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].imag() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+
+    if(h_u[xmax-1][i].real() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].imag() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
   }
 }
