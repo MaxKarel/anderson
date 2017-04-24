@@ -2,21 +2,23 @@
 #include <iomanip>
 #include <cmath>
 #include <fstream>
+#include <stdio.h>
 #include <thrust/complex.h>
 #include <thrust/copy.h>
 #include <cublas_v2.h>
+#include "cusolverDn.h"
 #include "helper_cuda.h"
 
 using namespace std;
 
 typedef thrust::complex<double> th_complex;
 
-const int xmax = 1024;
-const int tmax = 500;
-float dt = 0.02;
+const int xmax = 201;
+const int tmax = 150000;
+double dt = 0.002;
 //float dx = 2*sqrt(dt);
-float scale = 2;
-float dx = 1;
+double scale = 2.0;
+double dx = 1.0;
 th_complex imag_one (0.0, 1.0);
 th_complex a = -imag_one*th_complex(dt/(dx*dx),0.0);
 th_complex b = 1.0+a;
@@ -61,108 +63,154 @@ __global__ void transposeCU(th_complex* d_u,
     d_uH[i*xmax+j] = d_u[j*xmax+i];
   }
 }
-void printInitialVariables(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]);
-void printResult(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]);
-void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]);
+void printInitialVariables(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]);
+void printResult(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]);
+void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]);
 void stdDev_r(ofstream& r, float t, th_complex u[][xmax]);
 void transpose(th_complex arr[][xmax]);
-void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
+void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax],
             int xmax, th_complex a, th_complex b);
 
   th_complex h_u[xmax][xmax] = {}; //alocating on heap
   th_complex h_uH[xmax][xmax] = {};
   th_complex h_V[xmax][xmax] = {};
-  th_complex h_c[xmax] = {};
+  th_complex h_B[xmax][xmax] = {};
+  th_complex h_d[xmax] = {};
 
 int main() {
 
   if(xmax > 1024) {printf("Size of arr is greater than maximal number of threads %i\n", xmax);}
 
-  th_complex *d_u, *d_uH, *d_V, *d_c;
+
+  float arrSize = sizeof(th_complex) * xmax * xmax;
+  float vektSize = sizeof(th_complex) * xmax;
+
+  initializeHostArrays(h_u, h_uH, h_V);
+
+  //////////////////////////////////////////////
+  ////  CUDA                                ////
+  //////////////////////////////////////////////
+  th_complex *d_u, *d_uH, *d_V, *d_B, *d_d;
+  cudaMalloc(&d_u, arrSize);
+  cudaMalloc(&d_uH, arrSize);
+  cudaMalloc(&d_V, arrSize);
+  cudaMalloc(&d_B, arrSize);
+  cudaMalloc(&d_d, vektSize);
+  cuDoubleComplex* d_uc = reinterpret_cast<cuDoubleComplex* >(d_u);
+  cuDoubleComplex* d_uHc = reinterpret_cast<cuDoubleComplex* >(d_uH);
+  cuDoubleComplex* d_Vc = reinterpret_cast<cuDoubleComplex* >(d_V);
+  cuDoubleComplex* d_Bc = reinterpret_cast<cuDoubleComplex* >(d_B);
+  cuDoubleComplex* d_dc = reinterpret_cast<cuDoubleComplex* >(d_d);
 
   cuDoubleComplex alpha = make_cuDoubleComplex(1.0,0.0);
   cuDoubleComplex beta = make_cuDoubleComplex(0.0,0.0);
   const cuDoubleComplex* _alpha = &alpha;
   const cuDoubleComplex* _beta = &beta;
+
   cublasHandle_t handle;
   cublasCreate(&handle);
+  cusolverStatus_t status;
+  cusolverDnHandle_t handle_solver;
+  cusolverDnCreate(&handle_solver);
 
-  float arrSize = sizeof(th_complex) * xmax * xmax;
-  float vektSize = sizeof(th_complex) * xmax;
 
-  initializeHostArrays(h_u, h_uH, h_V, h_c);
-
-  //////////////////////////////////////////////
-  ////  CUDA                                ////
-  //////////////////////////////////////////////
   ofstream r_fout("and_stdDev_rCU.dat");
 
-  cudaMalloc(&d_u, arrSize);
-  cudaMalloc(&d_uH, arrSize);
-  cudaMalloc(&d_V, arrSize);
-  cudaMalloc(&d_c, vektSize);
   checkCudaErrors(cudaMemcpy(d_u, h_u, arrSize, cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(d_uH, h_uH, arrSize, cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(d_V, h_V, arrSize, cudaMemcpyHostToDevice));
-  checkCudaErrors(cudaMemcpy(d_c, h_c, vektSize, cudaMemcpyHostToDevice));
   dim3 dimBlock(32,32);
   dim3 dimGrid(xmax / 32 + 1, xmax / 32 + 1);
 
-  cuDoubleComplex* d_uc = reinterpret_cast<cuDoubleComplex* >(d_u);
-  cuDoubleComplex* d_uHc = reinterpret_cast<cuDoubleComplex* >(d_uH);
-  cuDoubleComplex* d_Vc = reinterpret_cast<cuDoubleComplex* >(d_V);
-
+  cuDoubleComplex* d_work;
+  int work_size = 0;
+  int info = 0;
+  int* d_info;
+  int* d_Ipiv;
+  cudaMalloc(&d_Ipiv,(xmax)*sizeof(int));
+  cudaMalloc(&d_info,sizeof(int));
+  cudaMalloc(&d_work,work_size*sizeof(cuDoubleComplex));
+  cusolverDnZgetrf_bufferSize(handle_solver,xmax,xmax,d_Bc,xmax,&work_size);
   cout.precision(25);
-  for (int t = 0; t< tmax; t++) {
-   altCU<<<1,xmax>>>(d_u, d_uH, d_V,xmax,a,b);
-   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
-               _alpha, d_Vc, xmax,
-               _beta, d_Vc, xmax,
-               d_uHc, xmax);
-   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
-               _alpha, d_uc, xmax,
-               _beta, d_uc, xmax,
-               d_uHc, xmax);
-   /*transposeCU<<<dimGrid,dimBlock>>>(d_V, d_uH, xmax);
-   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-   transposeCU<<<dimGrid,dimBlock>>>(d_u, d_uH, xmax);*/
-   altCU<<<1,xmax>>>(d_u, d_uH, d_V,xmax,a,b);
-   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
-               _alpha, d_Vc, xmax,
-               _beta, d_Vc, xmax,
-               d_uHc, xmax);
-   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-   cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
-               _alpha, d_uc, xmax,
-               _beta, d_uc, xmax,
-               d_uHc, xmax);
-   /*transposeCU<<<dimGrid,dimBlock>>>(d_V, d_uH, xmax);
-   cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-   transposeCU<<<dimGrid,dimBlock>>>(d_u, d_uH, xmax);*/
-   //cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-   if (t%100==0) {
-     cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
-     stdDev_r(r_fout,t,h_u);
-   }
+  for(int m = 0 ; m < xmax ; m++) {
+    for(int n = 0 ; n < xmax ; n++) {
+      h_B[m][n] = 0.0;
+    }
+  }
+  for (int t = 0; t < tmax; t++) {
+    /*for(int i = 0; i < xmax ; i++) {
+      h_B[0][0] = b - h_V[i][0];
+      h_B[0][1] = -a/2.0;
+      for(int k = 1 ; k < xmax -1 ; k++) {
+        h_B[k][k-1] = -a/2.0;
+        h_B[k][k] = b - h_V[i][k];
+        h_B[k][k+1] = -a/2.0;
+      }
+      h_B[xmax-1][xmax-2] = -a/2.0;
+      h_B[xmax-1][xmax-1] = b - h_V[i][xmax-1];
+      cudaMemcpy(d_B, h_B, arrSize, cudaMemcpyHostToDevice);
+      for(int j = 0 ; j < xmax ; j++) {
+        h_d[j] = (1.0-a)*h_uH[i][j] + a/2.0*(h_uH[i-1][j]+h_uH[i+1][j]);
+      }
+      cudaMemcpy(d_d, h_d, vektSize, cudaMemcpyHostToDevice);
+
+      cusolverDnZgetrf(handle_solver,xmax,xmax,d_Bc,xmax,d_work,d_Ipiv,d_info);
+      cudaMemcpy(&info, d_info,sizeof(int),cudaMemcpyDeviceToHost);
+    	if(info!=0){
+    			cout << info << endl;
+    		}
+      status = cusolverDnZgetrs(handle_solver,CUBLAS_OP_N ,xmax,1,d_Bc,xmax,d_Ipiv,d_dc,xmax,d_info);
+    	if(status!=CUSOLVER_STATUS_SUCCESS){
+    		cout << status << endl;
+    	}
+      cudaMemcpy(d_u+i ,d_d,vektSize,cudaMemcpyDeviceToDevice);
+      cudaDeviceSynchronize();
+    }
+
+    transpose(h_V);*/
+    altCU<<<1,xmax>>>(d_u, d_uH, d_V, xmax, a, b);
+    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+                _alpha, d_Vc, xmax,
+                _beta, d_Vc, xmax,
+                d_uHc, xmax);
+    cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+                _alpha, d_uc, xmax,
+                _beta, d_uc, xmax,
+                d_uHc, xmax);
+
+    altCU<<<1,xmax>>>(d_u, d_uH, d_V, xmax, a, b);
+    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+                _alpha, d_Vc, xmax,
+                _beta, d_Vc, xmax,
+                d_uHc, xmax);
+    cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+                _alpha, d_uc, xmax,
+                _beta, d_uc, xmax,
+                d_uHc, xmax);
+    //cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
+    if (t%100==0) {
+      cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
+      stdDev_r(r_fout,t,h_u);
+    }
   }
 
   cudaMemcpy(h_u, d_u, arrSize, cudaMemcpyDeviceToHost);
-  printResult(h_u, h_uH, h_V, h_c);
+  printResult(h_u, h_uH, h_V);
   cudaFree(d_u);
   cudaFree(d_V);
   cudaFree(d_uH);
-  cudaFree(d_c);
 
   //////////////////////////////////////////////
   ////  CPU                                 ////
   //////////////////////////////////////////////
   /*ofstream r_fout("std.cpp");
   for (int t = 0; t< tmax; t++) {
-    altCPU(h_u, h_V, h_c, xmax, a, b);
+    altCPU(h_u, h_V, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
-    altCPU(h_u, h_V, h_c, xmax, a, b);
+    altCPU(h_u, h_V, xmax, a, b);
     transpose(h_u);
     transpose(h_V);
     if (t%10==0) {
@@ -175,7 +223,7 @@ int main() {
   return 0;
 }
 
-void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]) {
+void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]) {
   for(int i = 0; i<xmax; i++){
     for (int j = 0; j < xmax; j++) {
       h_u[i][j] =th_complex(0.0, 0.0);
@@ -189,12 +237,12 @@ void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_co
   h_u[xmax/2][xmax/2] = th_complex(1.0, 0);
   h_uH[xmax/2][xmax/2] = th_complex(1.0, 0);
 }
-void printInitialVariables(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]) {
+void printInitialVariables(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]) {
   cout << "     dx== " << dx <<endl<< "     dt== " << dt << endl << "      a== " << a << endl;
   cout << "      b== " << b << endl;
 }
-void printResult(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax],th_complex h_c[]) {
-  printInitialVariables(h_u, h_uH, h_V, h_c);
+void printResult(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax]) {
+  printInitialVariables(h_u, h_uH, h_V);
   ofstream fout("data.dat");
   float sum = 0;
   for(int i = 0; i<xmax; i++){
@@ -229,11 +277,11 @@ void transpose(th_complex arr[][xmax]) {
   }
 }
 
-void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
+void altCPU(th_complex h_u[][xmax], th_complex h_V[][xmax],
             int xmax, th_complex a, th_complex b) {
 
   th_complex mod_rs[xmax];  //modified right side
-
+  th_complex h_c[xmax];
   for(int i = 0 ; i < xmax ; i++) {
     for (int j = 0 ; j < xmax ; j++) {
       h_uH[i][j] = h_u[i][j]; //This is preserved state in time = t
