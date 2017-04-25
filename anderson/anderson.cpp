@@ -160,4 +160,3 @@ void altCPU(thComp h_u[][xmax], thComp h_V[][xmax], thComp h_c[],
     if(h_u[xmax-1][i].imag() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
   }
 }
-
