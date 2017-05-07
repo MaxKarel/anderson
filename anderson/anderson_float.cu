@@ -15,17 +15,17 @@
 
 using namespace std;
 
-typedef thrust::complex<double> th_complex;
+typedef thrust::complex<float> th_complex;
 
 const int xmax = LATTICE_SIZE;
 const int tmax = 50;
-double dt = 0.02;
+float dt = 0.02f;
 //float dx = 2*sqrt(dt);
-double scale = 2.0;
-double dx = 1.0;
-th_complex imag_one (0.0, 1.0);
-th_complex a = -imag_one*th_complex(dt/(dx*dx),0.0);
-th_complex b = 1.0+a;
+float scale = 2.0f;
+float dx = 1.0f;
+th_complex imag_one (0.0f, 1.0f);
+th_complex a = -imag_one*th_complex(dt/(dx*dx),0.0f);
+th_complex b = 1.0f+a;
 
 __global__ void altCUc(th_complex* d_u, th_complex* d_uH, th_complex* d_V,
             int xmax, th_complex a, th_complex b) {
@@ -36,20 +36,20 @@ __global__ void altCUc(th_complex* d_u, th_complex* d_uH, th_complex* d_V,
     th_complex d_c[LATTICE_SIZE];
     //calculate h_c
     for(int j = 0 ; j < xmax ; j++) {
-      d_c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
+      d_c[j] = -a/2.0f;	//spodna diagonala v matici, je pri \psi(t-\Delta)
     }
     //modify h_c
-    d_c[0] /= b - 0.5*d_V[i*xmax+0];	//delime strednou diagonalou
+    d_c[0] /= b - 0.5f*d_V[i*xmax+0];	//delime strednou diagonalou
     for(int j = 1 ; j < xmax ; j++) {
-      d_c[j] /= (b - 0.5*d_V[i*xmax+j]) + a/2.0*d_c[j-1];	//spodna diagonala v matici je -a/2 preto +
+      d_c[j] /= (b - 0.5f*d_V[i*xmax+j]) + a/2.0f*d_c[j-1];	//spodna diagonala v matici je -a/2 preto +
     }
 
-    mod_rs[0]  =  (0.5*d_V[i*xmax+0] + 1.0-a)*d_uH[i*xmax+0] + a/2.0*(d_uH[(i-1)*xmax+0]+d_uH[(i+1)*xmax+0]);
-    mod_rs[0] /= b - 0.5*d_V[i*xmax+0];
+    mod_rs[0]  =  (0.5f*d_V[i*xmax+0] + 1.0f-a)*d_uH[i*xmax+0] + a/2.0f*(d_uH[(i-1)*xmax+0]+d_uH[(i+1)*xmax+0]);
+    mod_rs[0] /= b - 0.5f*d_V[i*xmax+0];
     th_complex di;  //unmodified right side, help variable
     for(int j=1; j < xmax-1; j++) {
-      di = (0.5*d_V[i*xmax+j] + 1.0-a)*d_uH[i*xmax+j] + a/2.0*(d_uH[(i-1)*xmax+j]+d_uH[(i+1)*xmax+j]);
-      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b - 0.5*d_V[i*xmax+j])+a/2.0*d_c[j-1]);
+      di = (0.5f*d_V[i*xmax+j] + 1.0f-a)*d_uH[i*xmax+j] + a/2.0f*(d_uH[(i-1)*xmax+j]+d_uH[(i+1)*xmax+j]);
+      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b - 0.5f*d_V[i*xmax+j])+a/2.0f*d_c[j-1]);
     }
     d_u[i*xmax+xmax-1]=0; //mod_rs[j];
     for(int j=xmax-2; j>0; j--) {
@@ -133,10 +133,10 @@ int main() {
   initializeHostArrays(h_u, h_uH, h_V, h_c);
 
   th_complex *d_u, *d_uH, *d_V, *d_c;
-  cuDoubleComplex alpha = make_cuDoubleComplex(1.0,0.0);
-  cuDoubleComplex beta = make_cuDoubleComplex(0.0,0.0);
-  const cuDoubleComplex* _alpha = &alpha;
-  const cuDoubleComplex* _beta = &beta;
+  cuComplex alpha = make_cuComplex(1.0f,0.0f);
+  cuComplex beta = make_cuComplex(0.0f,0.0f);
+  const cuComplex* _alpha = &alpha;
+  const cuComplex* _beta = &beta;
   cublasHandle_t handle;
   cublasCreate(&handle);
 
@@ -151,33 +151,33 @@ int main() {
   dim3 dimBlock(32,32);
   dim3 dimGrid(xmax / 32 + 1, xmax / 32 + 1);
 
-  cuDoubleComplex* d_uc = reinterpret_cast<cuDoubleComplex* >(d_u);
-  cuDoubleComplex* d_uHc = reinterpret_cast<cuDoubleComplex* >(d_uH);
-  cuDoubleComplex* d_Vc = reinterpret_cast<cuDoubleComplex* >(d_V);
+  cuComplex* d_uc = reinterpret_cast<cuComplex* >(d_u);
+  cuComplex* d_uHc = reinterpret_cast<cuComplex* >(d_uH);
+  cuComplex* d_Vc = reinterpret_cast<cuComplex* >(d_V);
 
   for(int i = 0; i < xmax; i++) {
-    h_c[i] = -a/2.0;
+    h_c[i] = -a/2.0f;
   }
 
   for (int t = 0; t< tmax; t++) {
     altCUc<<<1,xmax>>>(d_u,d_uH,d_V,xmax,a,b);
-    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+    cublasCgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
                 _alpha, d_Vc, xmax,
                 _beta, d_Vc, xmax,
                 d_uHc, xmax);
     cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+    cublasCgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
                 _alpha, d_uc, xmax,
                 _beta, d_uc, xmax,
                 d_uHc, xmax);
 
     altCUc<<<1,xmax>>>(d_u,d_uH,d_V,xmax,a,b);
-    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+    cublasCgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
                 _alpha, d_Vc, xmax,
                 _beta, d_Vc, xmax,
                 d_uHc, xmax);
     cudaMemcpy(d_V, d_uH, arrSize, cudaMemcpyDeviceToDevice);
-    cublasZgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
+    cublasCgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, xmax, xmax,
                 _alpha, d_uc, xmax,
                 _beta, d_uc, xmax,
                 d_uHc, xmax);
@@ -212,7 +212,7 @@ int main() {
       h_u[i][j] = 0;
     }
   }
-  h_u[xmax/2][xmax/2] = 1.0;
+  h_u[xmax/2][xmax/2] = 1.0f;
   for (int t = 0; t< tmax; t++) {
     altCPUc(h_u, h_V, h_c, xmax, a, b);
     transpose(h_u);
@@ -226,7 +226,7 @@ int main() {
   }
 
   clock_t end_cpu = clock();
-  double time_cpu = (double)(end_cpu - start_cpu) / CLOCKS_PER_SEC;
+  float time_cpu = (float)(end_cpu - start_cpu) / CLOCKS_PER_SEC;
   cout << "TIME CPU:   " << time_cpu << " s" << endl;
   printResult(h_u, out_data_cpu, out_time, time_cpu, "CPU");
 
@@ -236,24 +236,24 @@ int main() {
 void initializeHostArrays(th_complex h_u[][xmax], th_complex h_uH[][xmax], th_complex h_V[][xmax], th_complex h_c[]) {
   for(int i = 0; i<xmax; i++){
     for (int j = 0; j < xmax; j++) {
-      h_u[i][j] =th_complex(0.0, 0.0);
-      h_uH[i][j]=th_complex(0.0, 0.0);
-      h_V[i][j] =2*scale*(double)(rand()%10000/10000.0-0.5);
+      h_u[i][j] =th_complex(0.0f, 0.0f);
+      h_uH[i][j]=th_complex(0.0f, 0.0f);
+      h_V[i][j] =2*scale*(float)(rand()%10000/10000.0f-0.5f);
       h_V[i][j] *= dt/imag_one;
     }
   }
   //Nastavenie pociatocnych podmienok
-  h_u[xmax/2][xmax/2] = th_complex(1.0, 0);
-  h_uH[xmax/2][xmax/2] = th_complex(1.0, 0);
+  h_u[xmax/2][xmax/2] = th_complex(1.0f, 0);
+  h_uH[xmax/2][xmax/2] = th_complex(1.0f, 0);
 }
 void printResult(th_complex h_u[][xmax], ofstream& data_file, ofstream& time_file, float elapsed_time, string platform) {
   cout << "     dx== " << dx <<endl<< "     dt== " << dt << endl << "      a== " << a << endl;
   cout << "      b== " << b << endl;
 
-  double sum = 0;
+  float sum = 0;
   for(int i = 0; i<xmax; i++){
     for (int j = 0; j < xmax; j++) {
-      double probability = h_u[i][j].real()*h_u[i][j].real();
+      float probability = h_u[i][j].real()*h_u[i][j].real();
       probability += h_u[i][j].imag()*h_u[i][j].imag();
       data_file << i << " " << j << " " <<  probability << " " << endl;
       sum += probability;
@@ -265,7 +265,7 @@ void printResult(th_complex h_u[][xmax], ofstream& data_file, ofstream& time_fil
   time_file << "***************" << endl;
   time_file << "Runtime for " << platform << " was: " << elapsed_time << " s" << endl;
   time_file << "Probability sum was: " << sum << endl;
-  time_file << "Probability in middle (" << xmax/2 << "," << xmax/2 << ") was" << h_u[xmax/2][xmax/2] << endl;
+  time_file << "Probability in middle (" << xmax << "," << xmax << ") was" << h_u[xmax/2][xmax/2] << endl;
 
 }
 void stdDev_r(ofstream& r, float t, th_complex u[][xmax]) {
@@ -302,20 +302,20 @@ void altCPUa(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   for(int i = 1; i<xmax-1; i++) {
     //calculate h_c
     for(int j = 0 ; j < xmax ; j++) {
-      h_c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
+      h_c[j] = -a/2.0f;	//spodna diagonala v matici, je pri \psi(t-\Delta)
     }
     //modify h_c
     h_c[0] /= b - h_V[i][0];	//delime strednou diagonalou
     for(int j = 1 ; j < xmax ; j++) {
-      h_c[j] /= (b - h_V[i][j]) + a/2.0*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
+      h_c[j] /= (b - h_V[i][j]) + a/2.0f*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
     }
 
-    mod_rs[0]  = (1.0-a)*h_uH[i][0] + a/2.0*(h_uH[i-1][0]+h_uH[i+1][0]);
+    mod_rs[0]  = (1.0f-a)*h_uH[i][0] + a/2.0f*(h_uH[i-1][0]+h_uH[i+1][0]);
     mod_rs[0] /= b - h_V[i][0];
     th_complex di;  //unmodified right side, help variable
     for(int j=1; j < xmax-1; j++) {
-      di  = (1.0-a)*h_uH[i][j] + a/2.0*(h_uH[i-1][j]+h_uH[i+1][j]);
-      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b - h_V[i][j])+a/2.0*h_c[j-1]);
+      di  = (1.0f-a)*h_uH[i][j] + a/2.0f*(h_uH[i-1][j]+h_uH[i+1][j]);
+      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b - h_V[i][j])+a/2.0f*h_c[j-1]);
     }
     h_u[i][xmax-1]=0; //mod_rs[j];
     for(int j=xmax-2; j>0; j--) {
@@ -325,17 +325,17 @@ void altCPUa(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   cout.precision(17);
   //Kontrola ci okrajove body v mriezke su = 0
   for(int i = 0 ; i < xmax ; i++) {
-    if(h_u[i][0].real() != 0.0) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
-    if(h_u[i][0].imag() != 0.0) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
+    if(h_u[i][0].real() != 0.0f) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
+    if(h_u[i][0].imag() != 0.0f) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
 
-    if(h_u[i][xmax-1].real() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
-    if(h_u[i][xmax-1].imag() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].real() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].imag() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
 
-    if(h_u[0][i].real() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
-    if(h_u[0][i].imag() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].real() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].imag() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
 
-    if(h_u[xmax-1][i].real() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
-    if(h_u[xmax-1][i].imag() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].real() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].imag() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
   }
 }
 //potencial na pravej
@@ -351,22 +351,22 @@ void altCPUb(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   }
   //calculate h_c
   for(int j = 0 ; j < xmax ; j++) {
-    h_c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
+    h_c[j] = -a/2.0f;	//spodna diagonala v matici, je pri \psi(t-\Delta)
   }
   //modify h_c
   h_c[0] /= b;	//delime strednou diagonalou
   for(int j = 1 ; j < xmax ; j++) {
-    h_c[j] /= (b) + a/2.0*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
+    h_c[j] /= (b) + a/2.0f*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
   }
 
   for(int i = 1; i<xmax-1; i++) {
 
-    mod_rs[0]  =  (1.0-a+h_V[i][0])*h_uH[i][0] + a/2.0*(h_uH[i-1][0]+h_uH[i+1][0]);
+    mod_rs[0]  =  (1.0f-a+h_V[i][0])*h_uH[i][0] + a/2.0f*(h_uH[i-1][0]+h_uH[i+1][0]);
     mod_rs[0] /= b;
     th_complex di;  //unmodified right side, help variable
     for(int j=1; j < xmax-1; j++) {
-      di = (1.0-a+h_V[i][0])*h_uH[i][j] + a/2.0*(h_uH[i-1][j]+h_uH[i+1][j]);
-      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b)+a/2.0*h_c[j-1]);
+      di = (1.0f-a+h_V[i][0])*h_uH[i][j] + a/2.0f*(h_uH[i-1][j]+h_uH[i+1][j]);
+      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b)+a/2.0f*h_c[j-1]);
     }
     h_u[i][xmax-1]=0; //mod_rs[j];
     for(int j=xmax-2; j>0; j--) {
@@ -376,17 +376,17 @@ void altCPUb(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   cout.precision(17);
   //Kontrola ci okrajove body v mriezke su = 0
   for(int i = 0 ; i < xmax ; i++) {
-    if(h_u[i][0].real() != 0.0) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
-    if(h_u[i][0].imag() != 0.0) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
+    if(h_u[i][0].real() != 0.0f) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
+    if(h_u[i][0].imag() != 0.0f) {cout << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
 
-    if(h_u[i][xmax-1].real() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
-    if(h_u[i][xmax-1].imag() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].real() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].imag() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
 
-    if(h_u[0][i].real() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
-    if(h_u[0][i].imag() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].real() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].imag() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
 
-    if(h_u[xmax-1][i].real() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
-    if(h_u[xmax-1][i].imag() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].real() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].imag() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
   }
 }
 //potencial na oboch
@@ -404,20 +404,20 @@ void altCPUc(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   for(int i = 1; i<xmax-1; i++) {
     //calculate h_c
     for(int j = 0 ; j < xmax ; j++) {
-      h_c[j] = -a/2.0;	//spodna diagonala v matici, je pri \psi(t-\Delta)
+      h_c[j] = -a/2.0f;	//spodna diagonala v matici, je pri \psi(t-\Delta)
     }
     //modify h_c
-    h_c[0] /= b - 0.5*h_V[i][0];	//delime strednou diagonalou
+    h_c[0] /= b - 0.5f*h_V[i][0];	//delime strednou diagonalou
     for(int j = 1 ; j < xmax ; j++) {
-      h_c[j] /= (b - 0.5*h_V[i][j]) + a/2.0*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
+      h_c[j] /= (b - 0.5f*h_V[i][j]) + a/2.0f*h_c[j-1];	//spodna diagonala v matici je -a/2 preto +
     }
 
-    mod_rs[0]  =  (0.5*h_V[i][0] + 1.0-a)*h_uH[i][0] + a/2.0*(h_uH[i-1][0]+h_uH[i+1][0]);
-    mod_rs[0] /= b - 0.5*h_V[i][0];
+    mod_rs[0]  =  (0.5f*h_V[i][0] + 1.0f-a)*h_uH[i][0] + a/2.0f*(h_uH[i-1][0]+h_uH[i+1][0]);
+    mod_rs[0] /= b - 0.5f*h_V[i][0];
     th_complex di;  //unmodified right side, help variable
     for(int j=1; j < xmax-1; j++) {
-      di = (0.5*h_V[i][j] + 1.0-a)*h_uH[i][j] + a/2.0*(h_uH[i-1][j]+h_uH[i+1][j]);
-      mod_rs[j] = (di+a/2.0*mod_rs[j-1])/((b - 0.5*h_V[i][j])+a/2.0*h_c[j-1]);
+      di = (0.5f*h_V[i][j] + 1.0f-a)*h_uH[i][j] + a/2.0f*(h_uH[i-1][j]+h_uH[i+1][j]);
+      mod_rs[j] = (di+a/2.0f*mod_rs[j-1])/((b - 0.5f*h_V[i][j])+a/2.0f*h_c[j-1]);
     }
     h_u[i][xmax-1]=0; //mod_rs[j];
     for(int j=xmax-2; j>0; j--) {
@@ -427,16 +427,16 @@ void altCPUc(th_complex h_u[][xmax], th_complex h_V[][xmax], th_complex h_c[],
   cout.precision(17);
   //Kontrola ci okrajove body v mriezke su = 0
   for(int i = 0 ; i < xmax ; i++) {
-    if(h_u[i][0].real() != 0.0) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
-    if(h_u[i][0].imag() != 0.0) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
+    if(h_u[i][0].real() != 0.0f) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].real() << endl;}
+    if(h_u[i][0].imag() != 0.0f) {cout << setprecision(10) << "warning h_u[i][0] ==" << fixed << h_u[i][0].imag() << endl;}
 
-    if(h_u[i][xmax-1].real() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
-    if(h_u[i][xmax-1].imag() != 0.0) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].real() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
+    if(h_u[i][xmax-1].imag() != 0.0f) {cout << "warning h_u[i][xmax-1] ==" << h_u[i][xmax-1] << endl;}
 
-    if(h_u[0][i].real() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
-    if(h_u[0][i].imag() != 0.0) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].real() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
+    if(h_u[0][i].imag() != 0.0f) {cout << "warning h_u[0][i] ==" << h_u[0][i] << endl;}
 
-    if(h_u[xmax-1][i].real() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
-    if(h_u[xmax-1][i].imag() != 0.0) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].real() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
+    if(h_u[xmax-1][i].imag() != 0.0f) {cout << "warning h_u[xmax-1][i] ==" << h_u[xmax-1][i] << endl;}
   }
 }
